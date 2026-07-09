@@ -29,6 +29,8 @@ export type WordPopupProps = {
   culturalLoading: boolean;
   error: string | null;
   anchor: AnchorRect | null;
+  /** Hide cultural button for passage explanations. Default true. */
+  showCultural?: boolean;
   onClose: () => void;
   onRequestCultural: () => void;
 };
@@ -59,6 +61,7 @@ export function WordPopup({
   culturalLoading,
   error,
   anchor,
+  showCultural = true,
   onClose,
   onRequestCultural,
 }: WordPopupProps) {
@@ -236,7 +239,7 @@ export function WordPopup({
       )}
 
       <div className="mt-2 flex flex-wrap items-center gap-2">
-        {!cultural && (
+        {showCultural && !cultural && (
           <Button
             type="button"
             variant="outline"

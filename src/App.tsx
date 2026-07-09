@@ -1,33 +1,43 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Library } from '@/components/Library';
 import { Reader } from '@/components/Reader';
 import { ModelManager } from '@/components/ModelManager';
+import { ReadingSettingsPanel } from '@/components/ReadingSettingsPanel';
 import { Button } from '@/components/ui/button';
 import {
   deleteBook,
+  deleteBookmark,
   getBook,
   getMeaning,
+  getProgress,
   getSettings,
+  listBookmarks,
   listBooks,
   putMeaning,
   saveBook,
+  saveBookmark,
+  saveProgress,
   saveSettings,
 } from '@/db';
-import type { AppSettings, Book } from '@/db/types';
+import type { AppSettings, Book, Bookmark } from '@/db/types';
+import { computeBookPercent } from '@/db/types';
 import { getTier, type ModelTierId } from '@/constants/modelTiers';
 import { hashSentence, makeWordKey } from '@/lib/wordMarker';
-import { lookupWord } from '@/lib/modelClient';
+import { askPassage, lookupWord } from '@/lib/modelClient';
 import {
   cancelPrecompute,
   enqueueChapterPrecompute,
   pausePrecomputeForLookup,
   resumePrecomputeAfterLookup,
+  setCachePaused,
   type PrecomputeStatus,
 } from '@/lib/precomputeQueue';
+import { paginateParagraphs } from '@/lib/bookParser';
 import { SAMPLE_CHAPTER } from '@/data/sampleChapter';
 import { log } from '@/lib/logger';
+import { applyTheme } from '@/lib/theme';
 
-type View = 'library' | 'reader' | 'model' | 'demo';
+type View = 'library' | 'reader' | 'model' | 'demo' | 'settings';
 
 export default function App() {
   const [view, setView] = useState<View>('library');
@@ -35,66 +45,123 @@ export default function App() {
   const [settings, setSettings] = useState<AppSettings | null>(null);
   const [activeBook, setActiveBook] = useState<Book | null>(null);
   const [chapterIndex, setChapterIndex] = useState(0);
+  const [pageIndex, setPageIndex] = useState(0);
+  const [bookmarks, setBookmarks] = useState<Bookmark[]>([]);
+  const [progressPercent, setProgressPercent] = useState(0);
+  const [pageWordKeys, setPageWordKeys] = useState<string[]>([]);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [precompute, setPrecompute] = useState<PrecomputeStatus>({
     active: false,
     done: 0,
     total: 0,
     paused: false,
     fatalError: null,
+    mode: 'less',
   });
 
   const refreshBooks = useCallback(async () => {
     setBooks(await listBooks());
   }, []);
 
+  const refreshBookmarks = useCallback(async (bookId: string) => {
+    setBookmarks(await listBookmarks(bookId));
+  }, []);
+
   useEffect(() => {
     void (async () => {
       const s = await getSettings();
       setSettings(s);
+      applyTheme(s.theme);
       await refreshBooks();
       if (s.lastOpened) {
         const book = await getBook(s.lastOpened.bookId);
         if (book) {
           setActiveBook(book);
           setChapterIndex(s.lastOpened.chapterIndex);
-          setView(s.modelReady ? 'reader' : 'library');
+          setPageIndex(s.lastOpened.pageIndex ?? 0);
+          await refreshBookmarks(book.id);
+          const prog = await getProgress(book.id);
+          if (prog) setProgressPercent(prog.percent);
+          setView('reader');
         }
       }
     })();
-  }, [refreshBooks]);
+  }, [refreshBooks, refreshBookmarks]);
 
   const persistSettings = useCallback(async (next: AppSettings) => {
     setSettings(next);
+    applyTheme(next.theme);
     await saveSettings(next);
   }, []);
+
+  const chapter = activeBook?.chapters[chapterIndex];
+  const pageCount = useMemo(() => {
+    if (!chapter) return 1;
+    const paras = chapter.text
+      .split(/\n\n+/)
+      .map((p) => p.trim())
+      .filter(Boolean);
+    return Math.max(1, paginateParagraphs(paras, 2200).length);
+  }, [chapter]);
+
+  // Persist reading progress whenever chapter/page changes
+  useEffect(() => {
+    if (!activeBook || !settings || view !== 'reader') return;
+    const percent = computeBookPercent(
+      chapterIndex,
+      activeBook.chapters.length,
+      Math.min(pageIndex, pageCount - 1),
+      pageCount,
+    );
+    setProgressPercent(percent);
+    const safePage = Math.min(pageIndex, pageCount - 1);
+    void persistSettings({
+      ...settings,
+      lastOpened: {
+        bookId: activeBook.id,
+        chapterIndex,
+        pageIndex: safePage,
+      },
+    });
+    void saveProgress({
+      bookId: activeBook.id,
+      chapterIndex,
+      pageIndex: safePage,
+      percent,
+      updatedAt: Date.now(),
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeBook?.id, chapterIndex, pageIndex, pageCount, view]);
 
   async function handleImported(book: Book) {
     await saveBook(book);
     await refreshBooks();
     setActiveBook(book);
     setChapterIndex(0);
+    setPageIndex(0);
+    await refreshBookmarks(book.id);
     if (settings) {
       await persistSettings({
         ...settings,
-        lastOpened: { bookId: book.id, chapterIndex: 0 },
+        lastOpened: { bookId: book.id, chapterIndex: 0, pageIndex: 0 },
       });
     }
-    setView(settings?.modelReady ? 'reader' : 'model');
+    setView('reader');
   }
 
   async function handleOpen(bookId: string) {
     const book = await getBook(bookId);
     if (!book) return;
     setActiveBook(book);
-    const idx = settings?.lastOpened?.bookId === bookId ? settings.lastOpened.chapterIndex : 0;
+    const same = settings?.lastOpened?.bookId === bookId;
+    const idx = same ? settings!.lastOpened!.chapterIndex : 0;
+    const page = same ? (settings!.lastOpened!.pageIndex ?? 0) : 0;
     setChapterIndex(idx);
-    if (settings) {
-      await persistSettings({
-        ...settings,
-        lastOpened: { bookId, chapterIndex: idx },
-      });
-    }
-    setView(settings?.modelReady ? 'reader' : 'model');
+    setPageIndex(page);
+    await refreshBookmarks(bookId);
+    const prog = await getProgress(bookId);
+    setProgressPercent(prog?.percent ?? 0);
+    setView('reader');
   }
 
   async function handleDelete(bookId: string) {
@@ -113,17 +180,34 @@ export default function App() {
       cancelPrecompute();
       return;
     }
-    const chapter = activeBook.chapters[chapterIndex];
-    if (!chapter) return;
+    if (settings.cacheMode === 'off') {
+      cancelPrecompute();
+      return;
+    }
+    const ch = activeBook.chapters[chapterIndex];
+    if (!ch) return;
     void enqueueChapterPrecompute({
       bookId: activeBook.id,
       chapterIndex,
-      text: chapter.text,
+      text: ch.text,
       modelId,
+      cacheMode: settings.cacheMode,
+      cachePaused: settings.cachePaused,
+      limitWordKeys:
+        settings.cacheMode === 'less' ? new Set(pageWordKeys) : null,
       onStatus: setPrecompute,
     });
     return () => cancelPrecompute();
-  }, [view, activeBook, chapterIndex, settings?.modelReady, modelId]);
+  }, [
+    view,
+    activeBook,
+    chapterIndex,
+    settings?.modelReady,
+    settings?.cacheMode,
+    settings?.cachePaused,
+    modelId,
+    pageWordKeys,
+  ]);
 
   async function resolveMeaning(word: string, sentence: string) {
     if (!activeBook || !settings) {
@@ -140,7 +224,10 @@ export default function App() {
       return { meaning: cached.meaning, cultural: cached.cultural, fromCache: true };
     }
     if (!settings.modelReady) {
-      throw new Error('Enable the local model to look up meanings.');
+      return {
+        meaning: `“${word}” in this sentence would be explained by the local model. Enable a model under Model settings (needs WebGPU).`,
+        fromCache: false,
+      };
     }
     await pausePrecomputeForLookup();
     try {
@@ -158,7 +245,6 @@ export default function App() {
         cultural: result.cultural,
         model: modelId,
       });
-      log.info('cache', `Stored “${word}”`);
       return { ...result, fromCache: false };
     } finally {
       await resumePrecomputeAfterLookup();
@@ -167,19 +253,15 @@ export default function App() {
 
   async function resolveCultural(word: string, sentence: string) {
     if (!activeBook || !settings?.modelReady) {
-      throw new Error('Enable the local model for cultural notes.');
+      return 'Enable the local model for cultural notes.';
     }
     const sentenceHash = await hashSentence(sentence);
     const wordKey = makeWordKey(word, sentenceHash);
     const cached = await getMeaning(activeBook.id, chapterIndex, wordKey);
-    if (cached?.cultural) {
-      log.info('cache', `Cultural hit “${word}”`);
-      return cached.cultural;
-    }
+    if (cached?.cultural) return cached.cultural;
 
     await pausePrecomputeForLookup();
     try {
-      log.info('cache', `Cultural miss “${word}” — live lookup`);
       const result = await lookupWord({
         word,
         sentence,
@@ -199,16 +281,59 @@ export default function App() {
     }
   }
 
-  const chapter = activeBook?.chapters[chapterIndex];
-  const precomputeLabel = precompute.fatalError
-    ? 'Model unavailable on this GPU'
-    : precompute.paused
-      ? `Paused warm-up ${precompute.done}/${precompute.total}`
-      : precompute.active
-        ? `Warming ${precompute.done}/${precompute.total}`
-        : precompute.total > 0 && precompute.done >= precompute.total
-          ? 'Meanings cached'
-          : null;
+  async function resolvePassage(passage: string) {
+    if (!settings?.modelReady) {
+      return `In this passage — “${passage.slice(0, 80)}${passage.length > 80 ? '…' : ''}” — the wording carries a specific sense in the story. Enable the local model for a full explanation.`;
+    }
+    await pausePrecomputeForLookup();
+    try {
+      return await askPassage({
+        passage,
+        question:
+          'Explain this highlighted text clearly for a second-language reader. What does it mean in context? Keep it short.',
+        modelId,
+      });
+    } finally {
+      await resumePrecomputeAfterLookup();
+    }
+  }
+
+  async function askAboutPassage(passage: string, question: string) {
+    if (!settings?.modelReady) {
+      return `Model not enabled. Your question was: “${question}” about “${passage.slice(0, 60)}…”. Enable WebLLM under Model to get an answer.`;
+    }
+    await pausePrecomputeForLookup();
+    try {
+      return await askPassage({ passage, question, modelId });
+    } finally {
+      await resumePrecomputeAfterLookup();
+    }
+  }
+
+  const precomputeLabel = !settings?.modelReady
+    ? 'Model not enabled'
+    : settings.cacheMode === 'off'
+      ? 'Cache off'
+      : precompute.fatalError
+        ? 'Model unavailable on this GPU'
+        : settings.cachePaused || precompute.paused
+          ? `Cache paused ${precompute.done}/${precompute.total}`
+          : precompute.active
+            ? `Warming ${precompute.done}/${precompute.total}`
+            : precompute.total > 0 && precompute.done >= precompute.total
+              ? 'Page/chapter cached'
+              : null;
+
+  const demoChapters = useMemo(
+    () => [
+      {
+        index: 0,
+        title: SAMPLE_CHAPTER.chapterTitle,
+        text: SAMPLE_CHAPTER.text,
+      },
+    ],
+    [],
+  );
 
   return (
     <div className="flex min-h-dvh flex-col">
@@ -226,6 +351,14 @@ export default function App() {
           </Button>
           <Button type="button" variant="ghost" size="sm" onClick={() => setView('model')}>
             Model
+          </Button>
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            onClick={() => setSettingsOpen(true)}
+          >
+            Settings
           </Button>
           {view !== 'library' && (
             <Button type="button" variant="outline" size="sm" onClick={() => setView('library')}>
@@ -264,47 +397,62 @@ export default function App() {
           />
         )}
 
-        {view === 'reader' && activeBook && chapter && (
+        {view === 'reader' && activeBook && chapter && settings && (
           <Reader
+            bookId={activeBook.id}
             bookTitle={activeBook.title}
-            chapterTitle={chapter.title}
-            text={chapter.text}
-            chapterLabel={`Chapter ${chapterIndex + 1} of ${activeBook.chapters.length}`}
-            precomputeLabel={settings?.modelReady ? precomputeLabel : 'Model not enabled'}
-            hasPrev={chapterIndex > 0}
-            hasNext={chapterIndex < activeBook.chapters.length - 1}
-            onPrevChapter={() => {
-              const next = Math.max(0, chapterIndex - 1);
-              setChapterIndex(next);
-              if (settings) {
-                void persistSettings({
-                  ...settings,
-                  lastOpened: { bookId: activeBook.id, chapterIndex: next },
-                });
-              }
+            chapters={activeBook.chapters}
+            chapterIndex={chapterIndex}
+            pageIndex={pageIndex}
+            bookmarks={bookmarks}
+            progressPercent={progressPercent}
+            precomputeLabel={precomputeLabel}
+            hoverMeanings={settings.hoverMeanings}
+            onChapterChange={(idx) => {
+              setChapterIndex(idx);
+              setPageIndex(0);
             }}
-            onNextChapter={() => {
-              const next = Math.min(activeBook.chapters.length - 1, chapterIndex + 1);
-              setChapterIndex(next);
-              if (settings) {
-                void persistSettings({
-                  ...settings,
-                  lastOpened: { bookId: activeBook.id, chapterIndex: next },
-                });
-              }
+            onPageChange={(idx) => setPageIndex(Math.max(0, idx))}
+            onAddBookmark={(opts) => {
+              const bm = {
+                id: crypto.randomUUID(),
+                bookId: activeBook.id,
+                chapterIndex,
+                pageIndex: opts.pageIndex,
+                offset: opts.offset,
+                label: opts.label,
+                createdAt: Date.now(),
+              };
+              void saveBookmark(bm).then(() => refreshBookmarks(activeBook.id));
             }}
+            onDeleteBookmark={(id) => {
+              void deleteBookmark(id).then(() => refreshBookmarks(activeBook.id));
+            }}
+            onOpenSettings={() => setSettingsOpen(true)}
             resolveMeaning={resolveMeaning}
             resolveCultural={resolveCultural}
+            resolvePassage={resolvePassage}
+            askAboutPassage={askAboutPassage}
+            onPageWordKeys={setPageWordKeys}
           />
         )}
 
         {view === 'demo' && (
           <Reader
+            bookId="demo"
             bookTitle={SAMPLE_CHAPTER.title}
-            chapterTitle={SAMPLE_CHAPTER.chapterTitle}
-            text={SAMPLE_CHAPTER.text}
-            chapterLabel="Sample chapter"
+            chapters={demoChapters}
+            chapterIndex={0}
+            pageIndex={0}
+            bookmarks={[]}
+            progressPercent={0}
             precomputeLabel={null}
+            hoverMeanings={settings?.hoverMeanings ?? false}
+            onChapterChange={() => undefined}
+            onPageChange={() => undefined}
+            onAddBookmark={() => undefined}
+            onDeleteBookmark={() => undefined}
+            onOpenSettings={() => setSettingsOpen(true)}
             resolveMeaning={async (word) => ({
               meaning: `In this sentence, “${word}” carries a sense that fits the surrounding story — a contextual gloss, not a dictionary dump of senses.`,
               fromCache: true,
@@ -312,9 +460,34 @@ export default function App() {
             resolveCultural={async () =>
               'Optional cultural note would appear only after you ask for it.'
             }
+            resolvePassage={async (passage) =>
+              `This highlighted passage (“${passage.slice(0, 60)}${passage.length > 60 ? '…' : ''}”) would be explained in context once the local model is enabled.`
+            }
+            askAboutPassage={async (passage, question) =>
+              `Demo answer for “${question}” about “${passage.slice(0, 40)}…”. Enable the model for real answers.`
+            }
           />
         )}
       </main>
+
+      {settings && (
+        <ReadingSettingsPanel
+          open={settingsOpen}
+          settings={settings}
+          onClose={() => setSettingsOpen(false)}
+          onChange={(next) => {
+            void persistSettings(next);
+            if (next.cachePaused !== settings.cachePaused) {
+              void setCachePaused(next.cachePaused);
+            }
+          }}
+          onToggleCachePaused={() => {
+            const next = { ...settings, cachePaused: !settings.cachePaused };
+            void persistSettings(next);
+            void setCachePaused(next.cachePaused);
+          }}
+        />
+      )}
     </div>
   );
 }

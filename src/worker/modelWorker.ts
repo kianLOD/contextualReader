@@ -4,7 +4,12 @@ import {
   type MLCEngineInterface,
   type InitProgressReport,
 } from '@mlc-ai/web-llm';
-import { MEANING_SYSTEM_PROMPT, buildMeaningUserPrompt } from '../constants/prompts';
+import {
+  MEANING_SYSTEM_PROMPT,
+  PASSAGE_SYSTEM_PROMPT,
+  buildMeaningUserPrompt,
+  buildPassageUserPrompt,
+} from '../constants/prompts';
 
 export type WorkerRequest =
   | { id: string; type: 'init'; modelId: string }
@@ -14,6 +19,13 @@ export type WorkerRequest =
       word: string;
       sentence: string;
       wantCultural: boolean;
+      modelId: string;
+    }
+  | {
+      id: string;
+      type: 'askPassage';
+      passage: string;
+      question: string;
       modelId: string;
     }
   | {
@@ -31,6 +43,7 @@ export type WorkerResponse =
   | { id: string; type: 'progress'; progress: number; text: string }
   | { id: string; type: 'initDone' }
   | { id: string; type: 'lookupResult'; meaning: string; cultural?: string }
+  | { id: string; type: 'passageAnswer'; answer: string }
   | { id: string; type: 'precomputeItem'; wordKey: string; meaning: string }
   | { id: string; type: 'precomputeSkipped'; wordKey: string }
   | { id: string; type: 'cacheStatus'; cached: boolean }
@@ -153,6 +166,24 @@ async function handle(msg: WorkerRequest): Promise<void> {
         );
         log(msg.id, 'info', `Live lookup done “${msg.word}”`);
         post({ id: msg.id, type: 'lookupResult', ...result });
+        break;
+      }
+      case 'askPassage': {
+        log(msg.id, 'info', `Passage Q&A: ${msg.question.slice(0, 80)}`);
+        const eng = await ensureEngine(msg.modelId, msg.id);
+        const reply = await eng.chat.completions.create({
+          messages: [
+            { role: 'system', content: PASSAGE_SYSTEM_PROMPT },
+            {
+              role: 'user',
+              content: buildPassageUserPrompt(msg.passage, msg.question),
+            },
+          ],
+          temperature: 0.3,
+          max_tokens: 280,
+        });
+        const answer = reply.choices[0]?.message?.content?.trim() ?? '';
+        post({ id: msg.id, type: 'passageAnswer', answer });
         break;
       }
       case 'precomputeOne': {

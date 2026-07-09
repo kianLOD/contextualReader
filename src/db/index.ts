@@ -1,5 +1,11 @@
 import { openDB, type DBSchema, type IDBPDatabase } from 'idb';
-import type { AppSettings, Book, MeaningRecord } from './types';
+import type {
+  AppSettings,
+  Book,
+  Bookmark,
+  MeaningRecord,
+  ReadingProgress,
+} from './types';
 import { meaningsKey } from './types';
 
 interface ContextualReaderDB extends DBSchema {
@@ -15,10 +21,19 @@ interface ContextualReaderDB extends DBSchema {
     key: string;
     value: AppSettings;
   };
+  bookmarks: {
+    key: string;
+    value: Bookmark;
+    indexes: { 'by-book': string };
+  };
+  progress: {
+    key: string;
+    value: ReadingProgress;
+  };
 }
 
 const DB_NAME = 'contextual-reader';
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 
 let dbPromise: Promise<IDBPDatabase<ContextualReaderDB>> | null = null;
 
@@ -35,18 +50,33 @@ function getDb() {
         if (!db.objectStoreNames.contains('settings')) {
           db.createObjectStore('settings');
         }
+        if (!db.objectStoreNames.contains('bookmarks')) {
+          const store = db.createObjectStore('bookmarks', { keyPath: 'id' });
+          store.createIndex('by-book', 'bookId');
+        }
+        if (!db.objectStoreNames.contains('progress')) {
+          db.createObjectStore('progress', { keyPath: 'bookId' });
+        }
       },
     });
   }
   return dbPromise;
 }
 
-const DEFAULT_SETTINGS: AppSettings = {
+export const DEFAULT_SETTINGS: AppSettings = {
   modelTier: 'balanced',
   persistGranted: false,
   lastOpened: null,
   modelReady: false,
+  hoverMeanings: false,
+  theme: 'system',
+  cacheMode: 'less',
+  cachePaused: false,
 };
+
+function mergeSettings(raw: Partial<AppSettings> | undefined): AppSettings {
+  return { ...DEFAULT_SETTINGS, ...raw };
+}
 
 export async function listBooks(): Promise<Book[]> {
   const db = await getDb();
@@ -67,11 +97,16 @@ export async function saveBook(book: Book): Promise<void> {
 export async function deleteBook(id: string): Promise<void> {
   const db = await getDb();
   await db.delete('books', id);
-  const keys = await db.getAllKeys('meanings');
+  const meaningKeys = await db.getAllKeys('meanings');
   const prefix = `${id}:`;
   await Promise.all(
-    keys.filter((k) => String(k).startsWith(prefix)).map((k) => db.delete('meanings', k)),
+    meaningKeys
+      .filter((k) => String(k).startsWith(prefix))
+      .map((k) => db.delete('meanings', k)),
   );
+  const bookmarks = await db.getAllFromIndex('bookmarks', 'by-book', id);
+  await Promise.all(bookmarks.map((b) => db.delete('bookmarks', b.id)));
+  await db.delete('progress', id);
 }
 
 export async function getMeaning(
@@ -111,10 +146,36 @@ export async function hasMeaning(
 
 export async function getSettings(): Promise<AppSettings> {
   const db = await getDb();
-  return (await db.get('settings', 'app')) ?? { ...DEFAULT_SETTINGS };
+  return mergeSettings(await db.get('settings', 'app'));
 }
 
 export async function saveSettings(settings: AppSettings): Promise<void> {
   const db = await getDb();
   await db.put('settings', settings, 'app');
+}
+
+export async function listBookmarks(bookId: string): Promise<Bookmark[]> {
+  const db = await getDb();
+  const rows = await db.getAllFromIndex('bookmarks', 'by-book', bookId);
+  return rows.sort((a, b) => b.createdAt - a.createdAt);
+}
+
+export async function saveBookmark(bookmark: Bookmark): Promise<void> {
+  const db = await getDb();
+  await db.put('bookmarks', bookmark);
+}
+
+export async function deleteBookmark(id: string): Promise<void> {
+  const db = await getDb();
+  await db.delete('bookmarks', id);
+}
+
+export async function getProgress(bookId: string): Promise<ReadingProgress | undefined> {
+  const db = await getDb();
+  return db.get('progress', bookId);
+}
+
+export async function saveProgress(progress: ReadingProgress): Promise<void> {
+  const db = await getDb();
+  await db.put('progress', progress);
 }

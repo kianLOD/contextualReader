@@ -41,6 +41,7 @@ function getWorker(): Worker {
       if (
         msg.type === 'initDone' ||
         msg.type === 'lookupResult' ||
+        msg.type === 'passageAnswer' ||
         msg.type === 'precomputeItem' ||
         msg.type === 'precomputeSkipped' ||
         msg.type === 'cacheStatus' ||
@@ -112,6 +113,23 @@ export async function lookupWord(opts: {
   if (res.type !== 'lookupResult') throw new Error('Unexpected lookup response');
   log.info('lookup', `Done “${opts.word}” (${res.meaning.slice(0, 80)})`);
   return { meaning: res.meaning, cultural: res.cultural };
+}
+
+export async function askPassage(opts: {
+  passage: string;
+  question: string;
+  modelId: string;
+}): Promise<string> {
+  log.info('passage', `Ask: ${opts.question.slice(0, 80)}`);
+  const res = await send({
+    id: nextId(),
+    type: 'askPassage',
+    passage: opts.passage,
+    question: opts.question,
+    modelId: opts.modelId,
+  });
+  if (res.type !== 'passageAnswer') throw new Error('Unexpected passage response');
+  return res.answer;
 }
 
 export async function precomputeOne(opts: {

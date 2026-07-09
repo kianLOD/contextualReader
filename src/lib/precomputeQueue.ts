@@ -2,6 +2,7 @@ import { hasMeaning, putMeaning } from '@/db';
 import { collectRareWordItems, type RareWordItem } from '@/lib/wordMarker';
 import { precomputeOne, setWorkerPaused } from '@/lib/modelClient';
 import { log } from '@/lib/logger';
+import type { CacheMode } from '@/db/types';
 
 export type PrecomputeStatus = {
   active: boolean;
@@ -9,6 +10,7 @@ export type PrecomputeStatus = {
   total: number;
   paused: boolean;
   fatalError: string | null;
+  mode: CacheMode;
 };
 
 type QueueArgs = {
@@ -16,24 +18,31 @@ type QueueArgs = {
   chapterIndex: number;
   text: string;
   modelId: string;
+  cacheMode: CacheMode;
+  cachePaused: boolean;
+  /** When mode is `less`, only warm these wordKeys (e.g. current page). */
+  limitWordKeys?: Set<string> | null;
   onStatus: (status: PrecomputeStatus) => void;
 };
 
-/** Wait longer before first warm-up so the reader can tap without racing model load. */
 const IDLE_DELAY_MS = 5000;
 const BETWEEN_ITEMS_MS = 800;
+/** Cap for `less` mode when no page key set is provided. */
+const LESS_MODE_CAP = 12;
 
 let generation = 0;
 let pausedForLookup = false;
+let manualPaused = false;
 let running = false;
 let queue: RareWordItem[] = [];
-let ctx: Omit<QueueArgs, 'onStatus'> | null = null;
+let ctx: Omit<QueueArgs, 'onStatus' | 'limitWordKeys'> | null = null;
 let onStatus: ((status: PrecomputeStatus) => void) | null = null;
 let doneCount = 0;
 let totalCount = 0;
 let idleTimer: number | null = null;
 let fatalError: string | null = null;
 let workerPaused = false;
+let cacheMode: CacheMode = 'less';
 
 function isFatalModelError(err: unknown): boolean {
   const msg = err instanceof Error ? err.message : String(err);
@@ -44,11 +53,12 @@ function isFatalModelError(err: unknown): boolean {
 
 function emit() {
   onStatus?.({
-    active: !fatalError && (running || queue.length > 0),
+    active: !fatalError && cacheMode !== 'off' && (running || queue.length > 0),
     done: doneCount,
     total: totalCount,
-    paused: pausedForLookup,
+    paused: pausedForLookup || manualPaused,
     fatalError,
+    mode: cacheMode,
   });
 }
 
@@ -61,7 +71,7 @@ function clearIdleTimer() {
 
 function scheduleIdleTick(delay = IDLE_DELAY_MS) {
   clearIdleTimer();
-  if (pausedForLookup || fatalError) return;
+  if (pausedForLookup || manualPaused || fatalError || cacheMode === 'off') return;
   const gen = generation;
   idleTimer = window.setTimeout(() => {
     void tick(gen);
@@ -89,8 +99,8 @@ function haltOnFatal(message: string) {
 
 async function tick(gen: number) {
   if (gen !== generation) return;
-  if (fatalError) return;
-  if (pausedForLookup) {
+  if (fatalError || cacheMode === 'off') return;
+  if (pausedForLookup || manualPaused) {
     emit();
     return;
   }
@@ -151,7 +161,7 @@ async function tick(gen: number) {
   if (gen !== generation || fatalError) return;
   running = false;
 
-  if (pausedForLookup) {
+  if (pausedForLookup || manualPaused) {
     emit();
     return;
   }
@@ -168,21 +178,31 @@ export async function enqueueChapterPrecompute(args: QueueArgs): Promise<void> {
   generation += 1;
   const gen = generation;
   fatalError = null;
+  cacheMode = args.cacheMode;
+  manualPaused = args.cachePaused;
   ctx = {
     bookId: args.bookId,
     chapterIndex: args.chapterIndex,
     text: args.text,
     modelId: args.modelId,
+    cacheMode: args.cacheMode,
+    cachePaused: args.cachePaused,
   };
   onStatus = args.onStatus;
   pausedForLookup = false;
   doneCount = 0;
 
-  log.info('precompute', `Collecting rare words for chapter ${args.chapterIndex}`);
+  if (cacheMode === 'off') {
+    log.info('precompute', 'Cache mode off — skipping warm-up');
+    emit();
+    return;
+  }
+
+  log.info('precompute', `Collecting rare words for chapter ${args.chapterIndex} (mode=${cacheMode})`);
   const all = await collectRareWordItems(args.text);
   if (gen !== generation) return;
 
-  const pending: RareWordItem[] = [];
+  let pending: RareWordItem[] = [];
   for (const item of all) {
     if (!(await hasMeaning(args.bookId, args.chapterIndex, item.wordKey))) {
       pending.push(item);
@@ -190,22 +210,30 @@ export async function enqueueChapterPrecompute(args: QueueArgs): Promise<void> {
   }
   if (gen !== generation) return;
 
+  if (cacheMode === 'less') {
+    if (args.limitWordKeys && args.limitWordKeys.size > 0) {
+      pending = pending.filter((p) => args.limitWordKeys!.has(p.wordKey));
+    } else {
+      pending = pending.slice(0, LESS_MODE_CAP);
+    }
+  }
+
   queue = pending;
   totalCount = pending.length;
-  doneCount = all.length - pending.length;
+  doneCount = 0;
   emit();
 
   log.info(
     'precompute',
-    `Queue ready: ${pending.length} to warm, ${doneCount} already cached (starts in ${IDLE_DELAY_MS}ms idle)`,
+    `Queue ready: ${pending.length} to warm (mode=${cacheMode})${manualPaused ? ' [paused]' : ''}`,
   );
 
-  if (pending.length === 0) return;
+  if (pending.length === 0 || manualPaused) return;
   scheduleIdleTick(IDLE_DELAY_MS);
 }
 
 export async function pausePrecomputeForLookup(): Promise<void> {
-  if (fatalError) return;
+  if (fatalError || cacheMode === 'off') return;
   if (!pausedForLookup) {
     log.info('precompute', 'Pause — live lookup');
   }
@@ -216,15 +244,27 @@ export async function pausePrecomputeForLookup(): Promise<void> {
 }
 
 export async function resumePrecomputeAfterLookup(): Promise<void> {
-  if (fatalError) return;
+  if (fatalError || cacheMode === 'off') return;
   if (!pausedForLookup) return;
   pausedForLookup = false;
-  log.info('precompute', 'Resume idle warm-up');
+  log.info('precompute', 'Resume after live lookup');
   emit();
-  await setPausedState(false);
-  if (queue.length > 0) {
+  await setPausedState(manualPaused);
+  if (!manualPaused && queue.length > 0) {
     scheduleIdleTick(IDLE_DELAY_MS);
   }
+}
+
+/** User-facing pause/resume of idle warm-up. */
+export async function setCachePaused(paused: boolean): Promise<void> {
+  manualPaused = paused;
+  clearIdleTimer();
+  emit();
+  await setPausedState(paused || pausedForLookup);
+  if (!paused && !pausedForLookup && queue.length > 0 && cacheMode !== 'off') {
+    scheduleIdleTick(IDLE_DELAY_MS);
+  }
+  log.info('precompute', paused ? 'Cache paused by user' : 'Cache resumed by user');
 }
 
 export function cancelPrecompute(): void {
@@ -236,7 +276,6 @@ export function cancelPrecompute(): void {
   ctx = null;
   doneCount = 0;
   totalCount = 0;
-  // Do not spam the worker with resume on every cancel/remount.
   if (workerPaused) {
     workerPaused = false;
     void setWorkerPaused(false).catch(() => undefined);
