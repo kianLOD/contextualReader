@@ -1,32 +1,40 @@
-# React + TypeScript + Vite
+# Contextual Reader
 
-This template provides a minimal setup to get React working in Vite with HMR and some Oxlint rules.
+Fully client-side reader for second-language learners: import a book, see rare words with a subtle dotted underline, tap for a **contextual** meaning from a local in-browser model (WebLLM / WebGPU). No server, no external API.
 
-Currently, two official plugins are available:
+## Stack
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+- Vite + React + TypeScript
+- Tailwind CSS v4 + shadcn/ui
+- `@mlc-ai/web-llm` in a Web Worker
+- IndexedDB (`idb`) for books + meanings
+- Optional PWA install (durability only)
 
-## React Compiler
+## Develop
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
-
-## Expanding the Oxlint configuration
-
-If you are developing a production application, we recommend enabling type-aware lint rules by installing `oxlint-tsgolint` and editing `.oxlintrc.json`:
-
-```json
-{
-  "$schema": "./node_modules/oxlint/configuration_schema.json",
-  "plugins": ["react", "typescript", "oxc"],
-  "options": {
-    "typeAware": true
-  },
-  "rules": {
-    "react/rules-of-hooks": "error",
-    "react/only-export-components": ["warn", { "allowConstantExport": true }]
-  }
-}
+```bash
+pnpm install
+pnpm dev
 ```
 
-See the [Oxlint rules documentation](https://oxc.rs/docs/guide/usage/linter/rules) for the full list of rules and categories.
+```bash
+pnpm build
+pnpm preview
+```
+
+## Usage
+
+1. Open the app → **Demo** for a sample chapter with fake contextual glosses, or **Import EPUB or TXT**.
+2. **Model** → system check recommends a tier → download once (WebGPU required).
+3. Open a book; rare words are underlined. Tap for meaning; optional **Cultural context** on request.
+4. Chapter open triggers background precompute into IndexedDB so later taps are instant.
+
+## Invariants
+
+1. Contextual meanings, not dictionary lists
+2. Fully local inference
+3. Model downloads once, then loads from cache
+4. Frozen constants: `src/constants/frequencyList.ts`, `prompts.ts`, `modelTiers.ts`
+5. Subtle UI — dotted underline, short popup, cultural note only on request
+
+See `contextual-reader-mvp-spec.md` and `loop.md`.
