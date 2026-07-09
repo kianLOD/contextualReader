@@ -38,10 +38,24 @@ export type ReadingProgress = {
   updatedAt: number;
 };
 
-export type ThemeMode = 'light' | 'dark' | 'system';
+export type ThemeMode = 'light' | 'dark' | 'sepia' | 'system';
 
-/** Idle meaning warm-up intensity. */
+/**
+ * Background chapter-understanding intensity.
+ * Replaces the old per-word meaning warm-up cache modes.
+ */
 export type CacheMode = 'off' | 'less' | 'full';
+
+export type ChapterUnderstanding = {
+  bookId: string;
+  chapterIndex: number;
+  /** Compact notes the model reuses for lookups / Ask. */
+  text: string;
+  model: string;
+  /** How much of the chapter was covered (chars). */
+  coveredChars: number;
+  updatedAt: number;
+};
 
 export type AppSettings = {
   modelTier: 'light' | 'balanced' | 'best';
@@ -54,6 +68,7 @@ export type AppSettings = {
   modelReady: boolean;
   hoverMeanings: boolean;
   theme: ThemeMode;
+  /** Chapter understanding mode (legacy field name kept for settings migration). */
   cacheMode: CacheMode;
   /** Manual pause independent of mode. */
   cachePaused: boolean;
@@ -65,6 +80,13 @@ export function meaningsKey(
   wordKey: string,
 ): string {
   return `${bookId}:${chapterIndex}:${wordKey}`;
+}
+
+export function chapterUnderstandingKey(
+  bookId: string,
+  chapterIndex: number,
+): string {
+  return `${bookId}:${chapterIndex}`;
 }
 
 export function computeBookPercent(

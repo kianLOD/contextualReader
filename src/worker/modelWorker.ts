@@ -7,8 +7,10 @@ import {
 import {
   MEANING_SYSTEM_PROMPT,
   PASSAGE_SYSTEM_PROMPT,
+  CHAPTER_UNDERSTANDING_SYSTEM_PROMPT,
   buildMeaningUserPrompt,
   buildPassageUserPrompt,
+  buildChapterUnderstandingUserPrompt,
 } from '../constants/prompts';
 
 export type WorkerRequest =
@@ -20,6 +22,7 @@ export type WorkerRequest =
       sentence: string;
       wantCultural: boolean;
       modelId: string;
+      chapterUnderstanding?: string | null;
     }
   | {
       id: string;
@@ -27,13 +30,14 @@ export type WorkerRequest =
       passage: string;
       question: string;
       modelId: string;
+      chapterUnderstanding?: string | null;
     }
   | {
       id: string;
-      type: 'precomputeOne';
-      wordKey: string;
-      word: string;
-      sentence: string;
+      type: 'understandChapter';
+      chapterTitle: string;
+      excerpt: string;
+      priorUnderstanding?: string | null;
       modelId: string;
     }
   | { id: string; type: 'checkCached'; modelId: string }
@@ -44,8 +48,8 @@ export type WorkerResponse =
   | { id: string; type: 'initDone' }
   | { id: string; type: 'lookupResult'; meaning: string; cultural?: string }
   | { id: string; type: 'passageAnswer'; answer: string }
-  | { id: string; type: 'precomputeItem'; wordKey: string; meaning: string }
-  | { id: string; type: 'precomputeSkipped'; wordKey: string }
+  | { id: string; type: 'understandingResult'; text: string }
+  | { id: string; type: 'understandingSkipped' }
   | { id: string; type: 'cacheStatus'; cached: boolean }
   | { id: string; type: 'pausedAck'; paused: boolean }
   | { id: string; type: 'log'; level: 'info' | 'warn' | 'error'; message: string }
@@ -70,8 +74,8 @@ function log(id: string, level: 'info' | 'warn' | 'error', message: string) {
 }
 
 function priorityFor(type: WorkerRequest['type']): number {
-  if (type === 'precomputeOne') return 0;
-  return 1; // lookups / init / cache / pause
+  if (type === 'understandChapter') return 0;
+  return 1;
 }
 
 function pump() {
@@ -112,8 +116,14 @@ async function generateMeaning(
   word: string,
   sentence: string,
   wantCultural: boolean,
+  chapterUnderstanding?: string | null,
 ): Promise<{ meaning: string; cultural?: string }> {
-  const user = buildMeaningUserPrompt(word, sentence, wantCultural);
+  const user = buildMeaningUserPrompt(
+    word,
+    sentence,
+    wantCultural,
+    chapterUnderstanding,
+  );
   const reply = await eng.chat.completions.create({
     messages: [
       { role: 'system', content: MEANING_SYSTEM_PROMPT },
@@ -137,7 +147,6 @@ async function handle(msg: WorkerRequest): Promise<void> {
   try {
     switch (msg.type) {
       case 'setPaused': {
-        // Handled synchronously in onmessage
         break;
       }
       case 'checkCached': {
@@ -155,7 +164,7 @@ async function handle(msg: WorkerRequest): Promise<void> {
         log(
           msg.id,
           'info',
-          `Live lookup “${msg.word}”${msg.wantCultural ? ' (+cultural)' : ''}`,
+          `Live lookup “${msg.word}”${msg.wantCultural ? ' (+cultural)' : ''}${msg.chapterUnderstanding ? ' +chapter' : ''}`,
         );
         const eng = await ensureEngine(msg.modelId, msg.id);
         const result = await generateMeaning(
@@ -163,6 +172,7 @@ async function handle(msg: WorkerRequest): Promise<void> {
           msg.word,
           msg.sentence,
           msg.wantCultural,
+          msg.chapterUnderstanding,
         );
         log(msg.id, 'info', `Live lookup done “${msg.word}”`);
         post({ id: msg.id, type: 'lookupResult', ...result });
@@ -176,7 +186,11 @@ async function handle(msg: WorkerRequest): Promise<void> {
             { role: 'system', content: PASSAGE_SYSTEM_PROMPT },
             {
               role: 'user',
-              content: buildPassageUserPrompt(msg.passage, msg.question),
+              content: buildPassageUserPrompt(
+                msg.passage,
+                msg.question,
+                msg.chapterUnderstanding,
+              ),
             },
           ],
           temperature: 0.3,
@@ -186,21 +200,35 @@ async function handle(msg: WorkerRequest): Promise<void> {
         post({ id: msg.id, type: 'passageAnswer', answer });
         break;
       }
-      case 'precomputeOne': {
+      case 'understandChapter': {
         if (idlePaused) {
-          post({ id: msg.id, type: 'precomputeSkipped', wordKey: msg.wordKey });
+          post({ id: msg.id, type: 'understandingSkipped' });
           break;
         }
-        log(msg.id, 'info', `Idle precompute “${msg.word}”`);
+        log(msg.id, 'info', `Chapter understanding “${msg.chapterTitle}”`);
         const eng = await ensureEngine(msg.modelId, msg.id);
-        // Model load may have taken a while — re-check pause before generating
         if (idlePaused || highQueue.length > 0) {
-          log(msg.id, 'info', `Skip precompute “${msg.word}” (lookup waiting)`);
-          post({ id: msg.id, type: 'precomputeSkipped', wordKey: msg.wordKey });
+          log(msg.id, 'info', 'Skip understanding (lookup waiting)');
+          post({ id: msg.id, type: 'understandingSkipped' });
           break;
         }
-        const { meaning } = await generateMeaning(eng, msg.word, msg.sentence, false);
-        post({ id: msg.id, type: 'precomputeItem', wordKey: msg.wordKey, meaning });
+        const reply = await eng.chat.completions.create({
+          messages: [
+            { role: 'system', content: CHAPTER_UNDERSTANDING_SYSTEM_PROMPT },
+            {
+              role: 'user',
+              content: buildChapterUnderstandingUserPrompt(
+                msg.chapterTitle,
+                msg.excerpt,
+                msg.priorUnderstanding,
+              ),
+            },
+          ],
+          temperature: 0.3,
+          max_tokens: 420,
+        });
+        const text = reply.choices[0]?.message?.content?.trim() ?? '';
+        post({ id: msg.id, type: 'understandingResult', text });
         break;
       }
       default:
@@ -216,26 +244,20 @@ async function handle(msg: WorkerRequest): Promise<void> {
 self.onmessage = (event: MessageEvent<WorkerRequest>) => {
   const msg = event.data;
 
-  // Apply pause immediately so in-flight warm-up can notice it after model load.
   if (msg.type === 'setPaused') {
     idlePaused = msg.paused;
     if (idlePaused) {
       const dropped = lowQueue.splice(0, lowQueue.length);
       for (const item of dropped) {
-        if (item.msg.type === 'precomputeOne') {
-          post({
-            id: item.msg.id,
-            type: 'precomputeSkipped',
-            wordKey: item.msg.wordKey,
-          });
+        if (item.msg.type === 'understandChapter') {
+          post({ id: item.msg.id, type: 'understandingSkipped' });
         }
       }
-      log(msg.id, 'info', `Idle paused immediately; dropped ${dropped.length} queued warm-ups`);
+      log(msg.id, 'info', `Idle paused; dropped ${dropped.length} queued jobs`);
     } else {
       log(msg.id, 'info', 'Idle resumed');
     }
     post({ id: msg.id, type: 'pausedAck', paused: idlePaused });
-    // Don't need to queue setPaused — already applied
     if (!idlePaused) pump();
     return;
   }

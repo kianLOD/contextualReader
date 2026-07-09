@@ -42,8 +42,8 @@ function getWorker(): Worker {
         msg.type === 'initDone' ||
         msg.type === 'lookupResult' ||
         msg.type === 'passageAnswer' ||
-        msg.type === 'precomputeItem' ||
-        msg.type === 'precomputeSkipped' ||
+        msg.type === 'understandingResult' ||
+        msg.type === 'understandingSkipped' ||
         msg.type === 'cacheStatus' ||
         msg.type === 'pausedAck'
       ) {
@@ -96,6 +96,7 @@ export async function lookupWord(opts: {
   sentence: string;
   wantCultural: boolean;
   modelId: string;
+  chapterUnderstanding?: string | null;
   onProgress?: ProgressHandler;
 }): Promise<{ meaning: string; cultural?: string }> {
   log.info('lookup', `Request “${opts.word}” cultural=${opts.wantCultural}`);
@@ -107,6 +108,7 @@ export async function lookupWord(opts: {
       sentence: opts.sentence,
       wantCultural: opts.wantCultural,
       modelId: opts.modelId,
+      chapterUnderstanding: opts.chapterUnderstanding,
     },
     { onProgress: opts.onProgress },
   );
@@ -119,6 +121,7 @@ export async function askPassage(opts: {
   passage: string;
   question: string;
   modelId: string;
+  chapterUnderstanding?: string | null;
 }): Promise<string> {
   log.info('passage', `Ask: ${opts.question.slice(0, 80)}`);
   const res = await send({
@@ -127,31 +130,34 @@ export async function askPassage(opts: {
     passage: opts.passage,
     question: opts.question,
     modelId: opts.modelId,
+    chapterUnderstanding: opts.chapterUnderstanding,
   });
   if (res.type !== 'passageAnswer') throw new Error('Unexpected passage response');
   return res.answer;
 }
 
-export async function precomputeOne(opts: {
-  wordKey: string;
-  word: string;
-  sentence: string;
+export async function understandChapterChunk(opts: {
+  chapterTitle: string;
+  excerpt: string;
+  priorUnderstanding?: string | null;
   modelId: string;
-}): Promise<{ wordKey: string; meaning: string } | null> {
+}): Promise<string | null> {
   const res = await send({
     id: nextId(),
-    type: 'precomputeOne',
-    wordKey: opts.wordKey,
-    word: opts.word,
-    sentence: opts.sentence,
+    type: 'understandChapter',
+    chapterTitle: opts.chapterTitle,
+    excerpt: opts.excerpt,
+    priorUnderstanding: opts.priorUnderstanding,
     modelId: opts.modelId,
   });
-  if (res.type === 'precomputeSkipped') {
-    log.debug('precompute', `Skipped “${opts.word}”`);
+  if (res.type === 'understandingSkipped') {
+    log.debug('understand', 'Chunk skipped (busy)');
     return null;
   }
-  if (res.type !== 'precomputeItem') throw new Error('Unexpected precompute response');
-  return { wordKey: res.wordKey, meaning: res.meaning };
+  if (res.type !== 'understandingResult') {
+    throw new Error('Unexpected understanding response');
+  }
+  return res.text;
 }
 
 export async function checkModelCached(modelId: string): Promise<boolean> {

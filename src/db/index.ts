@@ -3,10 +3,11 @@ import type {
   AppSettings,
   Book,
   Bookmark,
+  ChapterUnderstanding,
   MeaningRecord,
   ReadingProgress,
 } from './types';
-import { meaningsKey } from './types';
+import { chapterUnderstandingKey, meaningsKey } from './types';
 
 interface ContextualReaderDB extends DBSchema {
   books: {
@@ -30,10 +31,14 @@ interface ContextualReaderDB extends DBSchema {
     key: string;
     value: ReadingProgress;
   };
+  chapterUnderstandings: {
+    key: string;
+    value: ChapterUnderstanding & { key: string };
+  };
 }
 
 const DB_NAME = 'contextual-reader';
-const DB_VERSION = 2;
+const DB_VERSION = 3;
 
 let dbPromise: Promise<IDBPDatabase<ContextualReaderDB>> | null = null;
 
@@ -56,6 +61,9 @@ function getDb() {
         }
         if (!db.objectStoreNames.contains('progress')) {
           db.createObjectStore('progress', { keyPath: 'bookId' });
+        }
+        if (!db.objectStoreNames.contains('chapterUnderstandings')) {
+          db.createObjectStore('chapterUnderstandings', { keyPath: 'key' });
         }
       },
     });
@@ -104,6 +112,12 @@ export async function deleteBook(id: string): Promise<void> {
       .filter((k) => String(k).startsWith(prefix))
       .map((k) => db.delete('meanings', k)),
   );
+  const understandingKeys = await db.getAllKeys('chapterUnderstandings');
+  await Promise.all(
+    understandingKeys
+      .filter((k) => String(k).startsWith(prefix))
+      .map((k) => db.delete('chapterUnderstandings', k)),
+  );
   const bookmarks = await db.getAllFromIndex('bookmarks', 'by-book', id);
   await Promise.all(bookmarks.map((b) => db.delete('bookmarks', b.id)));
   await db.delete('progress', id);
@@ -142,6 +156,30 @@ export async function hasMeaning(
   const db = await getDb();
   const key = meaningsKey(bookId, chapterIndex, wordKey);
   return (await db.count('meanings', key)) > 0;
+}
+
+export async function getChapterUnderstanding(
+  bookId: string,
+  chapterIndex: number,
+): Promise<ChapterUnderstanding | undefined> {
+  const db = await getDb();
+  const row = await db.get(
+    'chapterUnderstandings',
+    chapterUnderstandingKey(bookId, chapterIndex),
+  );
+  if (!row) return undefined;
+  const { key: _key, ...rest } = row;
+  return rest;
+}
+
+export async function putChapterUnderstanding(
+  record: ChapterUnderstanding,
+): Promise<void> {
+  const db = await getDb();
+  await db.put('chapterUnderstandings', {
+    key: chapterUnderstandingKey(record.bookId, record.chapterIndex),
+    ...record,
+  });
 }
 
 export async function getSettings(): Promise<AppSettings> {

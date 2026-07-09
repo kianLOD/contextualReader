@@ -4,7 +4,7 @@ import { Switch } from '@/components/ui/switch';
 import { Separator } from '@/components/ui/separator';
 import type { AppSettings, CacheMode, ThemeMode } from '@/db/types';
 import { cn } from '@/lib/utils';
-import { MoonIcon, SunIcon, XIcon } from 'lucide-react';
+import { XIcon } from 'lucide-react';
 
 type ReadingSettingsProps = {
   open: boolean;
@@ -14,10 +14,18 @@ type ReadingSettingsProps = {
   onToggleCachePaused: () => void;
 };
 
-const CACHE_OPTIONS: { id: CacheMode; label: string; hint: string }[] = [
-  { id: 'off', label: 'Off', hint: 'No background warm-up' },
-  { id: 'less', label: 'Less', hint: 'Only current page / a few words' },
-  { id: 'full', label: 'Full', hint: 'Warm the whole chapter when idle' },
+const UNDERSTANDING_OPTIONS: { id: CacheMode; label: string; hint: string }[] = [
+  { id: 'off', label: 'Off', hint: 'No background chapter notes' },
+  {
+    id: 'less',
+    label: 'Near you',
+    hint: 'Build notes for the start of the chapter through your current page',
+  },
+  {
+    id: 'full',
+    label: 'Whole chapter',
+    hint: 'Read the full chapter into notes when idle (slower on weak GPUs)',
+  },
 ];
 
 export function ReadingSettingsPanel({
@@ -61,23 +69,26 @@ export function ReadingSettingsPanel({
         <section className="space-y-3">
           <h3 className="text-sm font-medium">Appearance</h3>
           <div className="flex gap-2">
-            {(
-              [
-                { id: 'light', icon: SunIcon, label: 'Light' },
-                { id: 'dark', icon: MoonIcon, label: 'Dark' },
-                { id: 'system', icon: SunIcon, label: 'System' },
-              ] as const
-            ).map((opt) => (
-              <Button
-                key={opt.id}
-                type="button"
-                size="sm"
-                variant={theme === opt.id ? 'default' : 'outline'}
-                onClick={() => setThemeMode(opt.id)}
-              >
-                {opt.label}
-              </Button>
-            ))}
+            <div className="flex flex-wrap gap-2">
+              {(
+                [
+                  { id: 'light', label: 'Light' },
+                  { id: 'sepia', label: 'Sepia' },
+                  { id: 'dark', label: 'Dark' },
+                  { id: 'system', label: 'System' },
+                ] as const
+              ).map((opt) => (
+                <Button
+                  key={opt.id}
+                  type="button"
+                  size="sm"
+                  variant={theme === opt.id ? 'default' : 'outline'}
+                  onClick={() => setThemeMode(opt.id)}
+                >
+                  {opt.label}
+                </Button>
+              ))}
+            </div>
           </div>
         </section>
 
@@ -101,12 +112,13 @@ export function ReadingSettingsPanel({
         <Separator />
 
         <section className="space-y-3">
-          <h3 className="text-sm font-medium">Meaning cache</h3>
+          <h3 className="text-sm font-medium">Chapter understanding</h3>
           <p className="text-xs text-muted-foreground">
-            Background warm-up of rare-word meanings. Live taps always work.
+            When idle, the model builds short notes about the chapter. Word and Ask
+            answers use those notes — not just a few nearby sentences.
           </p>
           <div className="flex flex-col gap-2">
-            {CACHE_OPTIONS.map((opt) => (
+            {UNDERSTANDING_OPTIONS.map((opt) => (
               <button
                 key={opt.id}
                 type="button"
@@ -127,8 +139,10 @@ export function ReadingSettingsPanel({
           </div>
           <div className="flex items-center justify-between gap-3 pt-1">
             <div>
-              <p className="text-sm font-medium">Pause warm-up</p>
-              <p className="text-xs text-muted-foreground">Stop / start without changing mode</p>
+              <p className="text-sm font-medium">Pause notes</p>
+              <p className="text-xs text-muted-foreground">
+                Stop / start without changing mode
+              </p>
             </div>
             <Switch
               checked={settings.cachePaused}

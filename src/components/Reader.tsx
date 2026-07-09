@@ -6,7 +6,7 @@ import {
   useState,
   type ReactNode,
 } from 'react';
-import { markRareWords, sentenceAt, collectRareWordItems } from '@/lib/wordMarker';
+import { markRareWords, sentenceAt } from '@/lib/wordMarker';
 import { paginateParagraphs } from '@/lib/bookParser';
 import { WordPopup, type AnchorRect } from '@/components/WordPopup';
 import { Badge } from '@/components/ui/badge';
@@ -43,7 +43,7 @@ type ReaderProps = {
   pageIndex: number;
   bookmarks: Bookmark[];
   progressPercent: number;
-  precomputeLabel?: string | null;
+  statusLabel?: string | null;
   hoverMeanings?: boolean;
   onChapterChange: (index: number) => void;
   onPageChange: (index: number) => void;
@@ -58,7 +58,6 @@ type ReaderProps = {
   resolveCultural: (word: string, sentence: string) => Promise<string | undefined>;
   resolvePassage?: (passage: string, sentence: string) => Promise<string>;
   askAboutPassage?: (passage: string, question: string) => Promise<string>;
-  onPageWordKeys?: (keys: string[]) => void;
 };
 
 function rectFromDOMRect(r: DOMRect): AnchorRect {
@@ -88,7 +87,7 @@ export function Reader({
   pageIndex,
   bookmarks,
   progressPercent,
-  precomputeLabel,
+  statusLabel,
   hoverMeanings = false,
   onChapterChange,
   onPageChange,
@@ -99,7 +98,6 @@ export function Reader({
   resolveCultural,
   resolvePassage,
   askAboutPassage,
-  onPageWordKeys,
 }: ReaderProps) {
   const chapter = chapters[chapterIndex];
   const text = chapter?.text ?? '';
@@ -134,15 +132,6 @@ export function Reader({
   const [askLoading, setAskLoading] = useState(false);
   const lookupIdRef = useRef(0);
   const skipSelectionRef = useRef(false);
-
-  // Notify parent of rare-word keys on the current page (for "less" cache mode)
-  useEffect(() => {
-    if (!onPageWordKeys) return;
-    const pageText = pageParagraphs.join('\n\n');
-    void collectRareWordItems(pageText).then((items) => {
-      onPageWordKeys(items.map((i) => i.wordKey));
-    });
-  }, [pageParagraphs, onPageWordKeys]);
 
   // Clamp page when chapter changes
   useEffect(() => {
@@ -373,9 +362,9 @@ export function Reader({
           <span>
             Page {safePage + 1}/{pages.length}
           </span>
-          {precomputeLabel && (
+          {statusLabel && (
             <Badge variant="outline" className="font-normal">
-              {precomputeLabel}
+              {statusLabel}
             </Badge>
           )}
         </div>
@@ -492,7 +481,6 @@ export function Reader({
       <WordPopup
         open={Boolean(active)}
         word={active?.label ?? ''}
-        sentence={active?.sentence ?? ''}
         meaning={meaning}
         cultural={cultural}
         loading={loading}

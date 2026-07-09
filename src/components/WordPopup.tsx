@@ -22,14 +22,12 @@ export type AnchorRect = {
 export type WordPopupProps = {
   open: boolean;
   word: string;
-  sentence: string;
   meaning: string | null;
   cultural: string | null;
   loading: boolean;
   culturalLoading: boolean;
   error: string | null;
   anchor: AnchorRect | null;
-  /** Hide cultural button for passage explanations. Default true. */
   showCultural?: boolean;
   onClose: () => void;
   onRequestCultural: () => void;
@@ -37,7 +35,6 @@ export type WordPopupProps = {
 
 type Position = { top: number; left: number };
 
-/** Always prefer above the word so reading below stays clear. */
 function computePosition(anchor: AnchorRect, popupHeight: number): Position {
   const vw = window.innerWidth;
   const width = Math.min(POPUP_MAX_WIDTH, vw - 16);
@@ -54,7 +51,6 @@ function computePosition(anchor: AnchorRect, popupHeight: number): Position {
 export function WordPopup({
   open,
   word,
-  sentence,
   meaning,
   cultural,
   loading,
@@ -66,7 +62,6 @@ export function WordPopup({
   onRequestCultural,
 }: WordPopupProps) {
   const panelRef = useRef<HTMLDivElement>(null);
-  const [showSentence, setShowSentence] = useState(false);
   const [pos, setPos] = useState<Position | null>(null);
   const [secondsLeft, setSecondsLeft] = useState<number | null>(null);
   const dismissTimer = useRef<number | null>(null);
@@ -116,7 +111,6 @@ export function WordPopup({
 
   useEffect(() => {
     if (!open) {
-      setShowSentence(false);
       touchedRef.current = false;
       clearTimers();
       setSecondsLeft(null);
@@ -127,7 +121,6 @@ export function WordPopup({
     return clearTimers;
   }, [open, word]);
 
-  // Countdown starts only once the model answer (or error) is visible.
   useEffect(() => {
     if (!open) return;
     if (loading) {
@@ -149,7 +142,7 @@ export function WordPopup({
     }
     const height = panelRef.current.offsetHeight || 120;
     setPos(computePosition(anchor, height));
-  }, [open, anchor, meaning, cultural, loading, error, showSentence, secondsLeft]);
+  }, [open, anchor, meaning, cultural, loading, error, secondsLeft]);
 
   useEffect(() => {
     if (!open) return;
@@ -238,8 +231,8 @@ export function WordPopup({
         </>
       )}
 
-      <div className="mt-2 flex flex-wrap items-center gap-2">
-        {showCultural && !cultural && (
+      {showCultural && !cultural && (
+        <div className="mt-2">
           <Button
             type="button"
             variant="outline"
@@ -253,23 +246,7 @@ export function WordPopup({
           >
             {culturalLoading ? 'Loading…' : 'Cultural context'}
           </Button>
-        )}
-        <button
-          type="button"
-          className="text-left text-xs text-muted-foreground underline-offset-2 hover:underline"
-          onClick={() => {
-            markTouched();
-            setShowSentence((s) => !s);
-          }}
-        >
-          {showSentence ? 'Hide sentence' : 'Show sentence'}
-        </button>
-      </div>
-
-      {showSentence && (
-        <p className="mt-2 rounded-md bg-muted/60 px-2 py-1.5 text-xs italic text-muted-foreground">
-          {sentence}
-        </p>
+        </div>
       )}
     </div>,
     document.body,

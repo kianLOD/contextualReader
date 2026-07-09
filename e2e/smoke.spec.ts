@@ -53,13 +53,13 @@ test.describe('Contextual Reader smoke', () => {
     await expect(page.getByText(/Chapter One/i).first()).toBeVisible();
     await page.getByLabel('Close').click();
 
-    // Settings: dark mode + cache
+    // Settings: sepia + chapter understanding
     await page.getByRole('button', { name: /^Settings$/i }).first().click();
     await expect(page.getByRole('heading', { name: /Reading settings/i })).toBeVisible();
-    await page.getByRole('button', { name: /^Dark$/ }).click();
-    await expect(page.locator('html')).toHaveClass(/dark/);
+    await page.getByRole('button', { name: /^Sepia$/ }).click();
+    await expect(page.locator('html')).toHaveClass(/sepia/);
     await page.getByRole('button', { name: /^Off\b/ }).click();
-    await page.getByRole('button', { name: /^Less\b/ }).click();
+    await page.getByRole('button', { name: /^Near you\b/ }).click();
     await page.getByLabel('Close settings').click();
 
     // Ask about passage (model optional)

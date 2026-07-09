@@ -44,14 +44,14 @@ Prefer the spec over inventing features. Prefer `loop.md` process when continuin
 | Piece | Role |
 |-------|------|
 | Main thread UI | Library, Reader, WordPopup (anchored), ModelManager |
-| `src/worker/modelWorker.ts` | WebLLM init + `lookupWord` / `precomputeOne` with priority queues |
-| `src/lib/precomputeQueue.ts` | Idle, one-word warm-up; pause on live tap; halt on fatal GPU errors |
+| `src/worker/modelWorker.ts` | WebLLM init + `lookupWord` / `askPassage` / `understandChapter` with priority queues |
+| `src/lib/chapterUnderstanding.ts` | Idle chapter-notes builder; pause on live tap; halt on fatal GPU errors |
 | `src/lib/modelClient.ts` | Main-thread ↔ worker messaging |
-| `src/db/` | IndexedDB: `books`, `meanings`, `settings` |
+| `src/db/` | IndexedDB: `books`, `meanings`, `chapterUnderstandings`, `settings` |
 | `src/lib/wordMarker.ts` | Rare-word detection + sentence extraction + wordKey hashing |
 | shadcn/ui + Tailwind v4 | UI primitives; reading chrome stays light |
 
-**Lookup priority:** live taps must not wait behind chapter warm-up. Pause idle precompute, prefer high-priority worker jobs, then resume.
+**Lookup priority:** live taps must not wait behind chapter understanding. Pause idle notes work, prefer high-priority worker jobs, then resume. Word/Ask prompts inject stored chapter notes when available.
 
 **Popup:** anchored **above** the word (not a page modal). Auto-dismiss **10s after the answer arrives**, with visible “Disappear in N” countdown. Esc / outside tap / close also dismiss.
 

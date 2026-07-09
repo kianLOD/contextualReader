@@ -25,13 +25,13 @@ import { getTier, type ModelTierId } from '@/constants/modelTiers';
 import { hashSentence, makeWordKey } from '@/lib/wordMarker';
 import { askPassage, lookupWord } from '@/lib/modelClient';
 import {
-  cancelPrecompute,
-  enqueueChapterPrecompute,
-  pausePrecomputeForLookup,
-  resumePrecomputeAfterLookup,
-  setCachePaused,
-  type PrecomputeStatus,
-} from '@/lib/precomputeQueue';
+  cancelUnderstanding,
+  enqueueChapterUnderstanding,
+  pauseUnderstandingForLookup,
+  resumeUnderstandingAfterLookup,
+  setUnderstandingPaused,
+  type UnderstandingStatus,
+} from '@/lib/chapterUnderstanding';
 import { paginateParagraphs } from '@/lib/bookParser';
 import { SAMPLE_CHAPTER } from '@/data/sampleChapter';
 import { log } from '@/lib/logger';
@@ -48,15 +48,16 @@ export default function App() {
   const [pageIndex, setPageIndex] = useState(0);
   const [bookmarks, setBookmarks] = useState<Bookmark[]>([]);
   const [progressPercent, setProgressPercent] = useState(0);
-  const [pageWordKeys, setPageWordKeys] = useState<string[]>([]);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [precompute, setPrecompute] = useState<PrecomputeStatus>({
+  const [chapterNotes, setChapterNotes] = useState<string | null>(null);
+  const [understanding, setUnderstanding] = useState<UnderstandingStatus>({
     active: false,
     done: 0,
     total: 0,
     paused: false,
     fatalError: null,
     mode: 'less',
+    ready: false,
   });
 
   const refreshBooks = useCallback(async () => {
@@ -104,7 +105,25 @@ export default function App() {
     return Math.max(1, paginateParagraphs(paras, 2200).length);
   }, [chapter]);
 
-  // Persist reading progress whenever chapter/page changes
+  /** Char offset through the end of the current page (for `less` coverage). */
+  const pageEndOffset = useMemo(() => {
+    if (!chapter) return 0;
+    const paras = chapter.text
+      .split(/\n\n+/)
+      .map((p) => p.trim())
+      .filter(Boolean);
+    const pages = paginateParagraphs(paras, 2200);
+    const safe = Math.min(pageIndex, Math.max(0, pages.length - 1));
+    let offset = 0;
+    for (let i = 0; i <= safe; i++) {
+      const page = pages[i] ?? [];
+      for (const p of page) {
+        offset += p.length + 2;
+      }
+    }
+    return offset;
+  }, [chapter, pageIndex]);
+
   useEffect(() => {
     if (!activeBook || !settings || view !== 'reader') return;
     const percent = computeBookPercent(
@@ -175,29 +194,35 @@ export default function App() {
 
   const modelId = settings ? getTier(settings.modelTier).modelId : getTier('balanced').modelId;
 
+  const understandingFocus =
+    settings?.cacheMode === 'less' ? pageEndOffset : 0;
+
   useEffect(() => {
     if (view !== 'reader' || !activeBook || !settings?.modelReady) {
-      cancelPrecompute();
+      cancelUnderstanding();
+      setChapterNotes(null);
       return;
     }
     if (settings.cacheMode === 'off') {
-      cancelPrecompute();
+      cancelUnderstanding();
+      setChapterNotes(null);
       return;
     }
     const ch = activeBook.chapters[chapterIndex];
     if (!ch) return;
-    void enqueueChapterPrecompute({
+    void enqueueChapterUnderstanding({
       bookId: activeBook.id,
       chapterIndex,
+      chapterTitle: ch.title,
       text: ch.text,
       modelId,
       cacheMode: settings.cacheMode,
       cachePaused: settings.cachePaused,
-      limitWordKeys:
-        settings.cacheMode === 'less' ? new Set(pageWordKeys) : null,
-      onStatus: setPrecompute,
+      focusEndOffset: settings.cacheMode === 'less' ? understandingFocus : null,
+      onStatus: setUnderstanding,
+      onUnderstanding: setChapterNotes,
     });
-    return () => cancelPrecompute();
+    return () => cancelUnderstanding();
   }, [
     view,
     activeBook,
@@ -206,7 +231,7 @@ export default function App() {
     settings?.cacheMode,
     settings?.cachePaused,
     modelId,
-    pageWordKeys,
+    understandingFocus,
   ]);
 
   async function resolveMeaning(word: string, sentence: string) {
@@ -229,7 +254,7 @@ export default function App() {
         fromCache: false,
       };
     }
-    await pausePrecomputeForLookup();
+    await pauseUnderstandingForLookup();
     try {
       log.info('cache', `Miss “${word}” — live lookup`);
       const result = await lookupWord({
@@ -237,6 +262,7 @@ export default function App() {
         sentence,
         wantCultural: false,
         modelId,
+        chapterUnderstanding: chapterNotes,
       });
       await putMeaning(activeBook.id, chapterIndex, wordKey, {
         word,
@@ -247,7 +273,7 @@ export default function App() {
       });
       return { ...result, fromCache: false };
     } finally {
-      await resumePrecomputeAfterLookup();
+      await resumeUnderstandingAfterLookup();
     }
   }
 
@@ -260,13 +286,14 @@ export default function App() {
     const cached = await getMeaning(activeBook.id, chapterIndex, wordKey);
     if (cached?.cultural) return cached.cultural;
 
-    await pausePrecomputeForLookup();
+    await pauseUnderstandingForLookup();
     try {
       const result = await lookupWord({
         word,
         sentence,
         wantCultural: true,
         modelId,
+        chapterUnderstanding: chapterNotes,
       });
       await putMeaning(activeBook.id, chapterIndex, wordKey, {
         word,
@@ -277,7 +304,7 @@ export default function App() {
       });
       return result.cultural;
     } finally {
-      await resumePrecomputeAfterLookup();
+      await resumeUnderstandingAfterLookup();
     }
   }
 
@@ -285,16 +312,17 @@ export default function App() {
     if (!settings?.modelReady) {
       return `In this passage — “${passage.slice(0, 80)}${passage.length > 80 ? '…' : ''}” — the wording carries a specific sense in the story. Enable the local model for a full explanation.`;
     }
-    await pausePrecomputeForLookup();
+    await pauseUnderstandingForLookup();
     try {
       return await askPassage({
         passage,
         question:
           'Explain this highlighted text clearly for a second-language reader. What does it mean in context? Keep it short.',
         modelId,
+        chapterUnderstanding: chapterNotes,
       });
     } finally {
-      await resumePrecomputeAfterLookup();
+      await resumeUnderstandingAfterLookup();
     }
   }
 
@@ -302,26 +330,31 @@ export default function App() {
     if (!settings?.modelReady) {
       return `Model not enabled. Your question was: “${question}” about “${passage.slice(0, 60)}…”. Enable WebLLM under Model to get an answer.`;
     }
-    await pausePrecomputeForLookup();
+    await pauseUnderstandingForLookup();
     try {
-      return await askPassage({ passage, question, modelId });
+      return await askPassage({
+        passage,
+        question,
+        modelId,
+        chapterUnderstanding: chapterNotes,
+      });
     } finally {
-      await resumePrecomputeAfterLookup();
+      await resumeUnderstandingAfterLookup();
     }
   }
 
-  const precomputeLabel = !settings?.modelReady
+  const understandingLabel = !settings?.modelReady
     ? 'Model not enabled'
     : settings.cacheMode === 'off'
-      ? 'Cache off'
-      : precompute.fatalError
+      ? 'Chapter notes off'
+      : understanding.fatalError
         ? 'Model unavailable on this GPU'
-        : settings.cachePaused || precompute.paused
-          ? `Cache paused ${precompute.done}/${precompute.total}`
-          : precompute.active
-            ? `Warming ${precompute.done}/${precompute.total}`
-            : precompute.total > 0 && precompute.done >= precompute.total
-              ? 'Page/chapter cached'
+        : settings.cachePaused || understanding.paused
+          ? `Notes paused ${understanding.done}/${understanding.total || '…'}`
+          : understanding.active
+            ? `Understanding chapter… ${understanding.done}/${understanding.total}`
+            : understanding.ready
+              ? 'Chapter notes ready'
               : null;
 
   const demoChapters = useMemo(
@@ -406,7 +439,7 @@ export default function App() {
             pageIndex={pageIndex}
             bookmarks={bookmarks}
             progressPercent={progressPercent}
-            precomputeLabel={precomputeLabel}
+            statusLabel={understandingLabel}
             hoverMeanings={settings.hoverMeanings}
             onChapterChange={(idx) => {
               setChapterIndex(idx);
@@ -433,7 +466,6 @@ export default function App() {
             resolveCultural={resolveCultural}
             resolvePassage={resolvePassage}
             askAboutPassage={askAboutPassage}
-            onPageWordKeys={setPageWordKeys}
           />
         )}
 
@@ -446,7 +478,7 @@ export default function App() {
             pageIndex={0}
             bookmarks={[]}
             progressPercent={0}
-            precomputeLabel={null}
+            statusLabel={null}
             hoverMeanings={settings?.hoverMeanings ?? false}
             onChapterChange={() => undefined}
             onPageChange={() => undefined}
@@ -478,13 +510,13 @@ export default function App() {
           onChange={(next) => {
             void persistSettings(next);
             if (next.cachePaused !== settings.cachePaused) {
-              void setCachePaused(next.cachePaused);
+              void setUnderstandingPaused(next.cachePaused);
             }
           }}
           onToggleCachePaused={() => {
             const next = { ...settings, cachePaused: !settings.cachePaused };
             void persistSettings(next);
-            void setCachePaused(next.cachePaused);
+            void setUnderstandingPaused(next.cachePaused);
           }}
         />
       )}
