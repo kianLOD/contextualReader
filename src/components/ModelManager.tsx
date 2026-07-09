@@ -19,6 +19,7 @@ import {
 } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { cn } from '@/lib/utils';
+import { log } from '@/lib/logger';
 
 export type ModelManagerProps = {
   selectedTier: ModelTierId;
@@ -84,15 +85,29 @@ export function ModelManager({
     setRestoring(isRestore);
     setProgress(0);
     setProgressText(isRestore ? 'Restoring model…' : 'Downloading model…');
+    log.info(
+      'ModelManager',
+      isRestore ? `Restoring ${tier.modelId}` : `Downloading ${tier.modelId}`,
+    );
+    let lastLoggedPct = -10;
     try {
       const persistGranted = await requestPersistentStorage();
+      log.info('ModelManager', `storage.persist() => ${persistGranted}`);
       await initModel(tier.modelId, (p, text) => {
-        setProgress(Math.round(p * 100));
+        const pct = Math.round(p * 100);
+        setProgress(pct);
         setProgressText(text || (isRestore ? 'Restoring model…' : 'Downloading…'));
+        if (pct - lastLoggedPct >= 10 || pct === 100) {
+          lastLoggedPct = pct;
+          log.info('ModelManager', `${pct}% ${text}`);
+        }
       });
+      log.info('ModelManager', `Model ready: ${tier.modelId}`);
       onReady({ tier: selectedTier, persistGranted });
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Model download failed');
+      const message = err instanceof Error ? err.message : 'Model download failed';
+      log.error('ModelManager', message, err);
+      setError(message);
     } finally {
       setDownloading(false);
       setRestoring(false);
@@ -102,6 +117,7 @@ export function ModelManager({
   async function ensureReady() {
     if (!check?.webgpu) return;
     const cached = await checkModelCached(tier.modelId);
+    log.info('ModelManager', `hasModelInCache(${tier.modelId}) => ${cached}`);
     // If settings say ready but cache was evicted, show restoring state.
     await startDownload(Boolean(modelReady && !cached));
   }

@@ -1,6 +1,6 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import { markRareWords, sentenceAt } from '@/lib/wordMarker';
-import { WordPopup } from '@/components/WordPopup';
+import { WordPopup, type AnchorRect } from '@/components/WordPopup';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
@@ -9,6 +9,7 @@ export type ActiveWord = {
   word: string;
   sentence: string;
   start: number;
+  anchor: AnchorRect;
 };
 
 type ReaderProps = {
@@ -57,22 +58,45 @@ export function Reader({
   const [loading, setLoading] = useState(false);
   const [culturalLoading, setCulturalLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const lookupIdRef = useRef(0);
 
-  async function handleWordTap(word: string, offsetInChapter: number) {
+  async function handleWordTap(
+    word: string,
+    offsetInChapter: number,
+    el: HTMLElement,
+  ) {
+    const rect = el.getBoundingClientRect();
     const sentence = sentenceAt(text, offsetInChapter);
-    setActive({ word, sentence, start: offsetInChapter });
+    const id = ++lookupIdRef.current;
+
+    setActive({
+      word,
+      sentence,
+      start: offsetInChapter,
+      anchor: {
+        top: rect.top,
+        left: rect.left,
+        bottom: rect.bottom,
+        right: rect.right,
+        width: rect.width,
+        height: rect.height,
+      },
+    });
     setMeaning(null);
     setCultural(null);
     setError(null);
     setLoading(true);
+
     try {
       const result = await resolveMeaning(word, sentence);
+      if (lookupIdRef.current !== id) return;
       setMeaning(result.meaning);
       if (result.cultural) setCultural(result.cultural);
     } catch (err) {
+      if (lookupIdRef.current !== id) return;
       setError(err instanceof Error ? err.message : 'Lookup failed');
     } finally {
-      setLoading(false);
+      if (lookupIdRef.current === id) setLoading(false);
     }
   }
 
@@ -91,10 +115,13 @@ export function Reader({
   }
 
   function closePopup() {
+    lookupIdRef.current += 1;
     setActive(null);
     setMeaning(null);
     setCultural(null);
     setError(null);
+    setLoading(false);
+    setCulturalLoading(false);
   }
 
   const paragraphStarts = useMemo(() => {
@@ -153,7 +180,9 @@ export function Reader({
                       'border-b border-dotted border-muted-foreground/55',
                       'hover:border-muted-foreground/80',
                     )}
-                    onClick={() => handleWordTap(token.text, absoluteStart)}
+                    onClick={(e) =>
+                      void handleWordTap(token.text, absoluteStart, e.currentTarget)
+                    }
                   >
                     {token.text}
                   </button>
@@ -196,6 +225,7 @@ export function Reader({
         loading={loading}
         culturalLoading={culturalLoading}
         error={error}
+        anchor={active?.anchor ?? null}
         onClose={closePopup}
         onRequestCultural={handleCultural}
       />

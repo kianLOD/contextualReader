@@ -20,9 +20,12 @@ import { lookupWord } from '@/lib/modelClient';
 import {
   cancelPrecompute,
   enqueueChapterPrecompute,
+  pausePrecomputeForLookup,
+  resumePrecomputeAfterLookup,
   type PrecomputeStatus,
 } from '@/lib/precomputeQueue';
 import { SAMPLE_CHAPTER } from '@/data/sampleChapter';
+import { log } from '@/lib/logger';
 
 type View = 'library' | 'reader' | 'model' | 'demo';
 
@@ -36,6 +39,8 @@ export default function App() {
     active: false,
     done: 0,
     total: 0,
+    paused: false,
+    fatalError: null,
   });
 
   const refreshBooks = useCallback(async () => {
@@ -131,25 +136,33 @@ export default function App() {
     const wordKey = makeWordKey(word, sentenceHash);
     const cached = await getMeaning(activeBook.id, chapterIndex, wordKey);
     if (cached) {
+      log.info('cache', `Hit “${word}”`);
       return { meaning: cached.meaning, cultural: cached.cultural, fromCache: true };
     }
     if (!settings.modelReady) {
       throw new Error('Enable the local model to look up meanings.');
     }
-    const result = await lookupWord({
-      word,
-      sentence,
-      wantCultural: false,
-      modelId,
-    });
-    await putMeaning(activeBook.id, chapterIndex, wordKey, {
-      word,
-      sentence,
-      meaning: result.meaning,
-      cultural: result.cultural,
-      model: modelId,
-    });
-    return { ...result, fromCache: false };
+    await pausePrecomputeForLookup();
+    try {
+      log.info('cache', `Miss “${word}” — live lookup`);
+      const result = await lookupWord({
+        word,
+        sentence,
+        wantCultural: false,
+        modelId,
+      });
+      await putMeaning(activeBook.id, chapterIndex, wordKey, {
+        word,
+        sentence,
+        meaning: result.meaning,
+        cultural: result.cultural,
+        model: modelId,
+      });
+      log.info('cache', `Stored “${word}”`);
+      return { ...result, fromCache: false };
+    } finally {
+      await resumePrecomputeAfterLookup();
+    }
   }
 
   async function resolveCultural(word: string, sentence: string) {
@@ -159,30 +172,43 @@ export default function App() {
     const sentenceHash = await hashSentence(sentence);
     const wordKey = makeWordKey(word, sentenceHash);
     const cached = await getMeaning(activeBook.id, chapterIndex, wordKey);
-    if (cached?.cultural) return cached.cultural;
+    if (cached?.cultural) {
+      log.info('cache', `Cultural hit “${word}”`);
+      return cached.cultural;
+    }
 
-    const result = await lookupWord({
-      word,
-      sentence,
-      wantCultural: true,
-      modelId,
-    });
-    await putMeaning(activeBook.id, chapterIndex, wordKey, {
-      word,
-      sentence,
-      meaning: cached?.meaning ?? result.meaning,
-      cultural: result.cultural,
-      model: modelId,
-    });
-    return result.cultural;
+    await pausePrecomputeForLookup();
+    try {
+      log.info('cache', `Cultural miss “${word}” — live lookup`);
+      const result = await lookupWord({
+        word,
+        sentence,
+        wantCultural: true,
+        modelId,
+      });
+      await putMeaning(activeBook.id, chapterIndex, wordKey, {
+        word,
+        sentence,
+        meaning: cached?.meaning ?? result.meaning,
+        cultural: result.cultural,
+        model: modelId,
+      });
+      return result.cultural;
+    } finally {
+      await resumePrecomputeAfterLookup();
+    }
   }
 
   const chapter = activeBook?.chapters[chapterIndex];
-  const precomputeLabel = precompute.active
-    ? `Caching meanings ${precompute.done}/${precompute.total}`
-    : precompute.total > 0
-      ? 'Meanings cached'
-      : null;
+  const precomputeLabel = precompute.fatalError
+    ? 'Model unavailable on this GPU'
+    : precompute.paused
+      ? `Paused warm-up ${precompute.done}/${precompute.total}`
+      : precompute.active
+        ? `Warming ${precompute.done}/${precompute.total}`
+        : precompute.total > 0 && precompute.done >= precompute.total
+          ? 'Meanings cached'
+          : null;
 
   return (
     <div className="flex min-h-dvh flex-col">

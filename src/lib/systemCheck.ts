@@ -74,10 +74,20 @@ export async function runSystemCheck(): Promise<SystemCheckResult> {
   const healthyGpu =
     maxBufferSize >= 2 * 1024 * 1024 * 1024 ||
     maxStorageBufferBindingSize >= 1 * 1024 * 1024 * 1024;
+  // Older Intel iGPUs (e.g. UHD 620) often report WebGPU but fail larger models.
+  const weakIgpu =
+    maxBufferSize > 0 &&
+    maxBufferSize < 2 * 1024 * 1024 * 1024 &&
+    maxStorageBufferBindingSize < 1 * 1024 * 1024 * 1024;
 
   let recommendedTier: ModelTierId = 'balanced';
-  if (isMobile || (deviceMemoryGb !== null && deviceMemoryGb <= 4)) {
+  if (isMobile || (deviceMemoryGb !== null && deviceMemoryGb <= 4) || weakIgpu) {
     recommendedTier = 'light';
+    if (weakIgpu) {
+      warnings.push(
+        'Integrated GPU looks limited — use Light. Balanced/Best often fail on Intel UHD-class chips.',
+      );
+    }
   } else if (deviceMemoryGb !== null && deviceMemoryGb >= 8 && healthyGpu) {
     recommendedTier = 'balanced';
   }
@@ -89,6 +99,7 @@ export async function runSystemCheck(): Promise<SystemCheckResult> {
 
   const runnable: Record<ModelTierId, boolean> = {
     light: webgpu,
+    // Still selectable, but not recommended on weak iGPUs
     balanced: webgpu && !(isMobile && (deviceMemoryGb ?? 8) <= 4),
     best: webgpu && !isMobile && (deviceMemoryGb ?? 0) >= 8 && healthyGpu,
   };

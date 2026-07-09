@@ -12,28 +12,29 @@ export type ModelTier = {
   defaultFor: string;
 };
 
+/** Use q4f32 (not q4f16): many Intel iGPUs reject WGSL `enable f16`. */
 export const MODEL_TIERS: readonly ModelTier[] = [
   {
     id: 'light',
     label: 'Light',
-    modelId: 'Llama-3.2-1B-Instruct-q4f16_1-MLC',
-    downloadGb: 0.7,
+    modelId: 'Llama-3.2-1B-Instruct-q4f32_1-MLC',
+    downloadGb: 0.8,
     quality: 'basic meanings, weak nuance',
     defaultFor: 'mobile, ≤4GB RAM, slow net',
   },
   {
     id: 'balanced',
     label: 'Balanced',
-    modelId: 'Llama-3.2-3B-Instruct-q4f16_1-MLC',
-    downloadGb: 1.9,
+    modelId: 'Llama-3.2-3B-Instruct-q4f32_1-MLC',
+    downloadGb: 2.0,
     quality: 'solid meanings, decent idioms',
     defaultFor: 'most laptops (default)',
   },
   {
     id: 'best',
     label: 'Best',
-    modelId: 'Llama-3.1-8B-Instruct-q4f16_1-MLC',
-    downloadGb: 4.5,
+    modelId: 'Llama-3.1-8B-Instruct-q4f32_1-MLC',
+    downloadGb: 5.0,
     quality: 'strong cultural/nuance',
     defaultFor: 'desktop with real GPU',
   },
